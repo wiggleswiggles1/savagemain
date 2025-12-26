@@ -130,8 +130,8 @@
         .replace(/<[^>]*>?/gm, '')           // Removes HTML tags
         .replace(/:[a-zA-Z0-9_-]+:/g, '')    // Removes :emotename:
         .replace(/\[[^\]]*\]/g, '')          // Removes bracketed text
-        // UPDATED BELOW: Added $ and € to the allowed list
-        .replace(/[^\w\s?.!,$€]/g, '')       
+        .replace(/[^\w\s?.!,$€]/g, '')       // Keep letters, numbers, punctuation, and currency
+        .replace(/\$/g, ' dollars ')          // <--- ADD THIS LINE: Manually swap $ for the word
         .replace(/\s+/g, ' ')                // Collapses spaces
         .trim();
 
