@@ -120,34 +120,26 @@ function processAndSpeak(user, raw, isMod, isSub, isKick) {
 
     let clean = raw;
 
-    // --- STEP 1: CONVERT MONEY SYMBOLS TO WORDS FIRST ---
-    // We do this before ANY other cleaning so the word "dollars" 
-    // is safely stored as text.
-    clean = clean.replace(/\$/g, ' dollars ');
-    clean = clean.replace(/€/g, ' euros ');
-
-    // --- STEP 2: KICK EMOTE CLEANER ---
+    // 1. KICK EMOTE CLEANER
     if (isKick) {
         clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); 
     }
 
-    // --- STEP 3: REFINED CLEANING ---
+    // 2. REFINED CLEANING
     clean = clean
         .replace(/<[^>]*>?/gm, '')           // Removes HTML tags
         .replace(/:[a-zA-Z0-9_-]+:/g, '')    // Removes :emotename:
         .replace(/\[[^\]]*\]/g, '')          // Removes bracketed text
-        .replace(/[^\w\s?.!,]/g, '')         // Clean out all remaining weird symbols
+        // UPDATED WHITELIST: We added \$ here so the dollar sign is NOT deleted
+        .replace(/[^\w\s?.!,\$]/g, '')       
         .replace(/\s+/g, ' ')                // Collapses spaces
         .trim();
 
-    // --- STEP 4: WORD BLACKLIST CHECK ---
+    // 3. WORD BLACKLIST CHECK
     if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
 
-    // --- STEP 5: VALIDATION ---
-    if (/[a-zA-Z0-9]/.test(clean) === false) {
-        console.log("Message blocked: No alphanumeric characters found.");
-        return;
-    }
+    // 4. VALIDATION
+    if (/[a-zA-Z0-9]/.test(clean) === false) return;
 
     speak(user, clean);
 }
