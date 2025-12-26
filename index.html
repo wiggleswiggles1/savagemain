@@ -41,27 +41,15 @@
         el.style.color = ttsEnabled ? '#53fc18' : '#ff4b4b';
     }
 
-    // --- KICK (Deep Badge Scan Update) ---
+    // --- KICK ---
     const pusher = new Pusher('32cbd69e4b950bf97679', { cluster: 'us2', forceTLS: true });
     const kickChannel = pusher.subscribe(`chatrooms.${KICK_CHATROOM_ID}.v2`);
-    
     kickChannel.bind('App\\Events\\ChatMessageEvent', (data) => {
         const chat = typeof data === 'string' ? JSON.parse(data) : data;
-        if (!chat || !chat.sender) return;
-
-        // Extract all badge types into a simple list
-        const userBadges = chat.sender.identity.badges.map(b => b.type.toLowerCase());
-
-        // Check for Moderator/Broadcaster
-        const isMod = userBadges.some(b => b === 'moderator' || b === 'broadcaster');
-
-        // Check for ANY "special" status (Subs, VIPS, OG, Verified, etc.)
-        const isSubOrSpecial = userBadges.some(b => 
-            ['subscriber', 'founder', 'og', 'vip', 'verified', 'partner', 'staff'].includes(b)
-        );
-
+        const isMod = chat.sender.identity.badges.some(b => b.type === 'moderator' || b.type === 'broadcaster');
+        const isSub = chat.sender.identity.badges.some(b => b.type === 'subscriber' || b.type === 'founder' || b.type === 'og');
         handleCommands(chat.sender.username, chat.content, isMod);
-        processAndSpeak(chat.sender.username, chat.content, isMod, isSubOrSpecial, true);
+        processAndSpeak(chat.sender.username, chat.content, isMod, isSub, true); // Added 'true' to signal Kick
     });
 
     // --- TWITCH ---
@@ -83,8 +71,26 @@
             if (parts.length < 2) return;
             let message = parts[1].trim();
             const isMod = raw.includes('mod=1') || raw.includes('badges=broadcaster');
-            const isSub = raw.includes('subscriber=1') || raw.includes('founder/1') || raw.includes('vip=1');
+            const isSub = raw.includes('subscriber=1') || raw.includes('founder/1');
 
+            if (raw.includes('emotes=')) {
+                const emotesPart = raw.match(/emotes=([^; ]+)/);
+                if (emotesPart && emotesPart[1]) {
+                    const positions = [];
+                    emotesPart[1].split('/').forEach(e => {
+                        const ranges = e.split(':')[1];
+                        if (ranges) {
+                            ranges.split(',').forEach(r => {
+                                const [s, end] = r.split('-').map(Number);
+                                positions.push({s, end});
+                            });
+                        }
+                    });
+                    positions.sort((a, b) => b.s - a.s).forEach(p => {
+                        message = message.slice(0, p.s) + message.slice(p.end + 1);
+                    });
+                }
+            }
             handleCommands(user, message, isMod);
             processAndSpeak(user, message, isMod, isSub, false);
         };
@@ -95,45 +101,57 @@
     function handleCommands(user, msg, isMod) {
         const cmd = msg.toLowerCase().trim();
         if (!isMod) return;
-        if (cmd === "!ttsoff") { ttsEnabled = false; window.speechSynthesis.cancel(); updateStatusUI(); }
-        else if (cmd === "!ttson") { ttsEnabled = true; updateStatusUI(); }
-        else if (cmd === "!subson") { subOnlyMode = true; updateStatusUI(); }
-        else if (cmd === "!subsoff") { subOnlyMode = false; updateStatusUI(); }
-        else if (cmd === "!namesoff") { readNames = false; updateStatusUI(); }
-        else if (cmd === "!nameson") { readNames = true; updateStatusUI(); }
-        else if (cmd === "!ttsreset") { window.speechSynthesis.cancel(); }    
+        if (cmd === "!ttsoff") { ttsEnabled = false; window.speechSynthesis.cancel(); updateStatusUI(); speakSystem("TTS Off"); }
+        else if (cmd === "!ttson") { ttsEnabled = true; updateStatusUI(); speakSystem("TTS On"); }
+        else if (cmd === "!subson") { subOnlyMode = true; updateStatusUI(); speakSystem("Subs Only"); }
+        else if (cmd === "!subsoff") { subOnlyMode = false; updateStatusUI(); speakSystem("All Mode"); }
+        else if (cmd === "!namesoff") { readNames = false; updateStatusUI(); speakSystem("Names Off"); }
+        else if (cmd === "!nameson") { readNames = true; updateStatusUI(); speakSystem("Names On"); }
+        else if (cmd === "!ttsreset") { window.speechSynthesis.cancel(); speakSystem("TTS Reset"); }    
     }
 
 function processAndSpeak(user, raw, isMod, isSub, isKick) {
     if (!ttsEnabled) return; 
-    
-    // If Sub-Only mode is ON, you must be a Mod OR have one of the special badges checked above
     if (subOnlyMode && !isMod && !isSub) return;
-
     if (USER_BLACKLIST.includes(user.toLowerCase())) return;
     if (PREFIX_BLOCK.some(p => raw.trim().startsWith(p))) return;
     if (raw === lastProcessedMessage) return; 
     lastProcessedMessage = raw;
 
     let clean = raw;
-    if (isKick) { clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); }
 
+    // 1. KICK EMOTE CLEANER
+    if (isKick) {
+        clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); 
+    }
+
+    // 2. REFINED CLEANING
     clean = clean
-        .replace(/<[^>]*>?/gm, '')
-        .replace(/:[a-zA-Z0-9_-]+:/g, '')
-        .replace(/\[[^\]]*\]/g, '')
-        .replace(/[^\w\s?.!,\$]/g, '') 
-        .replace(/\s+/g, ' ')
+        .replace(/<[^>]*>?/gm, '')           // Removes HTML tags
+        .replace(/:[a-zA-Z0-9_-]+:/g, '')    // Removes :emotename:
+        .replace(/\[[^\]]*\]/g, '')          // Removes bracketed text
+        // UPDATED WHITELIST: We added \$ here so the dollar sign is NOT deleted
+        .replace(/[^\w\s?.!,\$]/g, '')       
+        .replace(/\s+/g, ' ')                // Collapses spaces
         .trim();
 
+    // 3. WORD BLACKLIST CHECK
     if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
+
+    // 4. VALIDATION
     if (/[a-zA-Z0-9]/.test(clean) === false) return;
 
     speak(user, clean);
 }
 
 function speak(user, text) {
+    // Some engines need a resume call before every speak event
     window.speechSynthesis.resume();
+    
+    // Optional: If you want numbers read clearly (1 2 3) instead of (One Hundred Twenty Three)
+    // Uncomment the next line:
+    // text = text.replace(/(\d)/g, '$1 ');
+
     const finalPhrase = readNames ? `${user} says: ${text}` : text;
     const speech = new SpeechSynthesisUtterance(finalPhrase);
 
@@ -145,11 +163,14 @@ function speak(user, text) {
 
     speech.rate = 1.1;
     speech.volume = 1.0;
+    
+    // Troubleshooting log - Open your browser console (F12) to see if this triggers
+    console.log(`Attempting to speak: ${finalPhrase}`);
+
     window.speechSynthesis.speak(speech);
 }
 
-setInterval(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 2000);
-updateStatusUI();
+    setInterval(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 2000);
 </script>
 </body>
 </html>
