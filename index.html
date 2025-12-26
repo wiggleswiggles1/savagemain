@@ -10,8 +10,8 @@
     </style>
 </head>
 <body>
-
 <script>
+    // --- CONFIGURATION ---
     const KICK_CHATROOM_ID = "1085080"; 
     const TWITCH_CHANNEL = "xstr8xsavagex";
     const TWITCH_OAUTH = "oauth:k00bellyf4iqcc6obzjomv9c7v6w1q";
@@ -35,34 +35,33 @@
 
     function updateStatusUI() {
         const el = document.getElementById('status-msg');
-        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${subOnlyMode ? "SUBS/VIP" : "ALL"} | Names: ${readNames ? "ON" : "OFF"}`;
+        const mode = subOnlyMode ? "SUBS ONLY" : "ALL";
+        const nameStatus = readNames ? "ON" : "OFF";
+        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${mode} | Names: ${nameStatus}`;
         el.style.color = ttsEnabled ? '#53fc18' : '#ff4b4b';
     }
 
-    // --- KICK (Full Badge Parsing) ---
+    // --- KICK (Deep Badge Scan Update) ---
     const pusher = new Pusher('32cbd69e4b950bf97679', { cluster: 'us2', forceTLS: true });
     const kickChannel = pusher.subscribe(`chatrooms.${KICK_CHATROOM_ID}.v2`);
     
     kickChannel.bind('App\\Events\\ChatMessageEvent', (data) => {
-        try {
-            const chat = typeof data === 'string' ? JSON.parse(data) : data;
-            if (!chat.sender) return;
+        const chat = typeof data === 'string' ? JSON.parse(data) : data;
+        if (!chat || !chat.sender) return;
 
-            const user = chat.sender.username;
-            const message = chat.content;
+        // Extract all badge types into a simple list
+        const userBadges = chat.sender.identity.badges.map(b => b.type.toLowerCase());
 
-            // Kick badges are objects. We check if ANY badge suggests they aren't a "Normal" viewer
-            const badges = chat.sender.identity.badges || [];
-            const isMod = badges.some(b => b.type === 'moderator' || b.type === 'broadcaster');
-            
-            // This now includes EVERY badge type Kick uses to ensure NinjaSky/K9 get through
-            const isSpecial = badges.some(b => 
-                ['subscriber', 'founder', 'og', 'vip', 'verified', 'partner', 'staff', 'admin'].includes(b.type)
-            );
+        // Check for Moderator/Broadcaster
+        const isMod = userBadges.some(b => b === 'moderator' || b === 'broadcaster');
 
-            handleCommands(user, message, isMod);
-            processAndSpeak(user, message, isMod, isSpecial, true);
-        } catch (e) {}
+        // Check for ANY "special" status (Subs, VIPS, OG, Verified, etc.)
+        const isSubOrSpecial = userBadges.some(b => 
+            ['subscriber', 'founder', 'og', 'vip', 'verified', 'partner', 'staff'].includes(b)
+        );
+
+        handleCommands(chat.sender.username, chat.content, isMod);
+        processAndSpeak(chat.sender.username, chat.content, isMod, isSubOrSpecial, true);
     });
 
     // --- TWITCH ---
@@ -85,7 +84,7 @@
             let message = parts[1].trim();
             const isMod = raw.includes('mod=1') || raw.includes('badges=broadcaster');
             const isSub = raw.includes('subscriber=1') || raw.includes('founder/1') || raw.includes('vip=1');
-            
+
             handleCommands(user, message, isMod);
             processAndSpeak(user, message, isMod, isSub, false);
         };
@@ -94,20 +93,21 @@
     connectTwitch();
 
     function handleCommands(user, msg, isMod) {
-        if (!isMod) return;
         const cmd = msg.toLowerCase().trim();
+        if (!isMod) return;
         if (cmd === "!ttsoff") { ttsEnabled = false; window.speechSynthesis.cancel(); updateStatusUI(); }
         else if (cmd === "!ttson") { ttsEnabled = true; updateStatusUI(); }
         else if (cmd === "!subson") { subOnlyMode = true; updateStatusUI(); }
         else if (cmd === "!subsoff") { subOnlyMode = false; updateStatusUI(); }
-        else if (cmd === "!nameson") { readNames = true; updateStatusUI(); }
         else if (cmd === "!namesoff") { readNames = false; updateStatusUI(); }
+        else if (cmd === "!nameson") { readNames = true; updateStatusUI(); }
+        else if (cmd === "!ttsreset") { window.speechSynthesis.cancel(); }    
     }
 
 function processAndSpeak(user, raw, isMod, isSub, isKick) {
     if (!ttsEnabled) return; 
     
-    // Logic: If Sub-Only is ON, you must be a Mod OR have a Special badge (Sub/VIP/Partner)
+    // If Sub-Only mode is ON, you must be a Mod OR have one of the special badges checked above
     if (subOnlyMode && !isMod && !isSub) return;
 
     if (USER_BLACKLIST.includes(user.toLowerCase())) return;
@@ -116,34 +116,24 @@ function processAndSpeak(user, raw, isMod, isSub, isKick) {
     lastProcessedMessage = raw;
 
     let clean = raw;
-
-    // Remove Kick Emotes properly without nuking the message
-    if (isKick) {
-        clean = clean.replace(/\[emote:\d+:([\w]+)\]/g, '$1'); 
-    }
+    if (isKick) { clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); }
 
     clean = clean
         .replace(/<[^>]*>?/gm, '')
         .replace(/:[a-zA-Z0-9_-]+:/g, '')
+        .replace(/\[[^\]]*\]/g, '')
         .replace(/[^\w\s?.!,\$]/g, '') 
         .replace(/\s+/g, ' ')
         .trim();
 
     if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
-    
-    // FAILSAFE: If cleaning made it empty, say the user's name at least
-    if (clean.length === 0) {
-        clean = "sent an emote";
-    }
+    if (/[a-zA-Z0-9]/.test(clean) === false) return;
 
     speak(user, clean);
 }
 
 function speak(user, text) {
-    // Force reset for browsers that hang
-    window.speechSynthesis.pause();
     window.speechSynthesis.resume();
-
     const finalPhrase = readNames ? `${user} says: ${text}` : text;
     const speech = new SpeechSynthesisUtterance(finalPhrase);
 
@@ -152,14 +142,13 @@ function speak(user, text) {
         for (let i = 0; i < user.length; i++) hash = user.charCodeAt(i) + ((hash << 5) - hash);
         speech.voice = voices[Math.abs(hash) % voices.length];
     }
-    
-    speech.rate = 1.0;
+
+    speech.rate = 1.1;
     speech.volume = 1.0;
     window.speechSynthesis.speak(speech);
 }
 
-// Keep the browser from sleeping
-setInterval(() => { if (!window.speechSynthesis.speaking) window.speechSynthesis.resume(); }, 3000);
+setInterval(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 2000);
 updateStatusUI();
 </script>
 </body>
