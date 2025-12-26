@@ -10,6 +10,7 @@
     </style>
 </head>
 <body>
+
 <script>
     const KICK_CHATROOM_ID = "1085080"; 
     const TWITCH_CHANNEL = "xstr8xsavagex";
@@ -34,29 +35,33 @@
 
     function updateStatusUI() {
         const el = document.getElementById('status-msg');
-        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${subOnlyMode ? "SUBS" : "ALL"} | Names: ${readNames ? "ON" : "OFF"}`;
+        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${subOnlyMode ? "SUBS/VIP" : "ALL"} | Names: ${readNames ? "ON" : "OFF"}`;
         el.style.color = ttsEnabled ? '#53fc18' : '#ff4b4b';
     }
 
-    // --- KICK (Fixed Data Mapping) ---
+    // --- KICK (Full Badge Parsing) ---
     const pusher = new Pusher('32cbd69e4b950bf97679', { cluster: 'us2', forceTLS: true });
     const kickChannel = pusher.subscribe(`chatrooms.${KICK_CHATROOM_ID}.v2`);
     
     kickChannel.bind('App\\Events\\ChatMessageEvent', (data) => {
         try {
             const chat = typeof data === 'string' ? JSON.parse(data) : data;
-            // Kick users like NinjaSkyEntertainment might have specific badge types
-            // so we grab the username and message content very loosely
-            const user = chat.sender?.username || "Unknown User";
-            const message = chat.content || "";
+            if (!chat.sender) return;
 
-            const badges = chat.sender?.identity?.badges || [];
-            const isMod = badges.some(b => ['moderator', 'broadcaster'].includes(b.type));
-            // Check for ALL possible VIP/Subscriber badges
-            const isSub = badges.some(b => ['subscriber', 'founder', 'og', 'vip', 'verified', 'partner'].includes(b.type));
+            const user = chat.sender.username;
+            const message = chat.content;
+
+            // Kick badges are objects. We check if ANY badge suggests they aren't a "Normal" viewer
+            const badges = chat.sender.identity.badges || [];
+            const isMod = badges.some(b => b.type === 'moderator' || b.type === 'broadcaster');
+            
+            // This now includes EVERY badge type Kick uses to ensure NinjaSky/K9 get through
+            const isSpecial = badges.some(b => 
+                ['subscriber', 'founder', 'og', 'vip', 'verified', 'partner', 'staff', 'admin'].includes(b.type)
+            );
 
             handleCommands(user, message, isMod);
-            processAndSpeak(user, message, isMod, isSub, true);
+            processAndSpeak(user, message, isMod, isSpecial, true);
         } catch (e) {}
     });
 
@@ -79,7 +84,9 @@
             if (parts.length < 2) return;
             let message = parts[1].trim();
             const isMod = raw.includes('mod=1') || raw.includes('badges=broadcaster');
-            const isSub = raw.includes('subscriber=1') || raw.includes('founder/1');
+            const isSub = raw.includes('subscriber=1') || raw.includes('founder/1') || raw.includes('vip=1');
+            
+            handleCommands(user, message, isMod);
             processAndSpeak(user, message, isMod, isSub, false);
         };
         socket.onclose = () => setTimeout(connectTwitch, 5000);
@@ -99,17 +106,18 @@
 
 function processAndSpeak(user, raw, isMod, isSub, isKick) {
     if (!ttsEnabled) return; 
+    
+    // Logic: If Sub-Only is ON, you must be a Mod OR have a Special badge (Sub/VIP/Partner)
     if (subOnlyMode && !isMod && !isSub) return;
+
     if (USER_BLACKLIST.includes(user.toLowerCase())) return;
     if (PREFIX_BLOCK.some(p => raw.trim().startsWith(p))) return;
-    
-    // Prevent double-reading duplicate messages
     if (raw === lastProcessedMessage) return; 
     lastProcessedMessage = raw;
 
     let clean = raw;
 
-    // Remove Emotes but keep text
+    // Remove Kick Emotes properly without nuking the message
     if (isKick) {
         clean = clean.replace(/\[emote:\d+:([\w]+)\]/g, '$1'); 
     }
@@ -123,18 +131,17 @@ function processAndSpeak(user, raw, isMod, isSub, isKick) {
 
     if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
     
-    // If the message is only emojis or symbols, we force it to say SOMETHING
-    // so we don't ignore the user entirely.
+    // FAILSAFE: If cleaning made it empty, say the user's name at least
     if (clean.length === 0) {
-        clean = "Sent an emote";
+        clean = "sent an emote";
     }
 
     speak(user, clean);
 }
 
 function speak(user, text) {
-    // Crucial: Chrome requires a cancel/resume combo to stay "alive"
-    window.speechSynthesis.cancel(); 
+    // Force reset for browsers that hang
+    window.speechSynthesis.pause();
     window.speechSynthesis.resume();
 
     const finalPhrase = readNames ? `${user} says: ${text}` : text;
@@ -146,12 +153,13 @@ function speak(user, text) {
         speech.voice = voices[Math.abs(hash) % voices.length];
     }
     
-    speech.onerror = (e) => console.log("Speech Error:", e);
+    speech.rate = 1.0;
+    speech.volume = 1.0;
     window.speechSynthesis.speak(speech);
 }
 
-// Keep engine warm
-setInterval(() => { window.speechSynthesis.resume(); }, 5000);
+// Keep the browser from sleeping
+setInterval(() => { if (!window.speechSynthesis.speaking) window.speechSynthesis.resume(); }, 3000);
 updateStatusUI();
 </script>
 </body>
