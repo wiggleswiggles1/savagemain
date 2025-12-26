@@ -38,27 +38,26 @@
         el.style.color = ttsEnabled ? '#53fc18' : '#ff4b4b';
     }
 
-    // --- KICK ---
+    // --- KICK (Fixed Data Mapping) ---
     const pusher = new Pusher('32cbd69e4b950bf97679', { cluster: 'us2', forceTLS: true });
     const kickChannel = pusher.subscribe(`chatrooms.${KICK_CHATROOM_ID}.v2`);
     
     kickChannel.bind('App\\Events\\ChatMessageEvent', (data) => {
         try {
             const chat = typeof data === 'string' ? JSON.parse(data) : data;
-            if (!chat || !chat.sender) return;
+            // Kick users like NinjaSkyEntertainment might have specific badge types
+            // so we grab the username and message content very loosely
+            const user = chat.sender?.username || "Unknown User";
+            const message = chat.content || "";
 
-            const user = chat.sender.username;
-            const message = chat.content;
-
-            const badges = chat.sender.identity.badges || [];
+            const badges = chat.sender?.identity?.badges || [];
             const isMod = badges.some(b => ['moderator', 'broadcaster'].includes(b.type));
-            const isSub = badges.some(b => ['subscriber', 'founder', 'og', 'vip', 'verified'].includes(b.type));
+            // Check for ALL possible VIP/Subscriber badges
+            const isSub = badges.some(b => ['subscriber', 'founder', 'og', 'vip', 'verified', 'partner'].includes(b.type));
 
             handleCommands(user, message, isMod);
             processAndSpeak(user, message, isMod, isSub, true);
-        } catch (e) {
-            // Error handled silently to prevent script crashing
-        }
+        } catch (e) {}
     });
 
     // --- TWITCH ---
@@ -81,7 +80,6 @@
             let message = parts[1].trim();
             const isMod = raw.includes('mod=1') || raw.includes('badges=broadcaster');
             const isSub = raw.includes('subscriber=1') || raw.includes('founder/1');
-
             processAndSpeak(user, message, isMod, isSub, false);
         };
         socket.onclose = () => setTimeout(connectTwitch, 5000);
@@ -102,31 +100,43 @@
 function processAndSpeak(user, raw, isMod, isSub, isKick) {
     if (!ttsEnabled) return; 
     if (subOnlyMode && !isMod && !isSub) return;
-
     if (USER_BLACKLIST.includes(user.toLowerCase())) return;
     if (PREFIX_BLOCK.some(p => raw.trim().startsWith(p))) return;
+    
+    // Prevent double-reading duplicate messages
     if (raw === lastProcessedMessage) return; 
     lastProcessedMessage = raw;
 
     let clean = raw;
-    if (isKick) { clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); }
+
+    // Remove Emotes but keep text
+    if (isKick) {
+        clean = clean.replace(/\[emote:\d+:([\w]+)\]/g, '$1'); 
+    }
 
     clean = clean
         .replace(/<[^>]*>?/gm, '')
         .replace(/:[a-zA-Z0-9_-]+:/g, '')
-        .replace(/\[[^\]]*\]/g, '')
         .replace(/[^\w\s?.!,\$]/g, '') 
         .replace(/\s+/g, ' ')
         .trim();
 
     if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
-    if (clean.length === 0) return;
+    
+    // If the message is only emojis or symbols, we force it to say SOMETHING
+    // so we don't ignore the user entirely.
+    if (clean.length === 0) {
+        clean = "Sent an emote";
+    }
 
     speak(user, clean);
 }
 
 function speak(user, text) {
+    // Crucial: Chrome requires a cancel/resume combo to stay "alive"
+    window.speechSynthesis.cancel(); 
     window.speechSynthesis.resume();
+
     const finalPhrase = readNames ? `${user} says: ${text}` : text;
     const speech = new SpeechSynthesisUtterance(finalPhrase);
 
@@ -135,10 +145,13 @@ function speak(user, text) {
         for (let i = 0; i < user.length; i++) hash = user.charCodeAt(i) + ((hash << 5) - hash);
         speech.voice = voices[Math.abs(hash) % voices.length];
     }
+    
+    speech.onerror = (e) => console.log("Speech Error:", e);
     window.speechSynthesis.speak(speech);
 }
 
-setInterval(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 2000);
+// Keep engine warm
+setInterval(() => { window.speechSynthesis.resume(); }, 5000);
 updateStatusUI();
 </script>
 </body>
