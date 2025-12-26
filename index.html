@@ -110,7 +110,7 @@
         else if (cmd === "!ttsreset") { window.speechSynthesis.cancel(); speakSystem("TTS Reset"); }    
     }
 
-    function processAndSpeak(user, raw, isMod, isSub, isKick) {
+function processAndSpeak(user, raw, isMod, isSub, isKick) {
     if (!ttsEnabled) return; 
     if (subOnlyMode && !isMod && !isSub) return;
     if (USER_BLACKLIST.includes(user.toLowerCase())) return;
@@ -120,27 +120,30 @@
 
     let clean = raw;
 
-    // 1. KICK EMOTE CLEANER
+    // --- STEP 1: CONVERT MONEY SYMBOLS TO WORDS FIRST ---
+    // We do this before ANY other cleaning so the word "dollars" 
+    // is safely stored as text.
+    clean = clean.replace(/\$/g, ' dollars ');
+    clean = clean.replace(/€/g, ' euros ');
+
+    // --- STEP 2: KICK EMOTE CLEANER ---
     if (isKick) {
         clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); 
     }
 
-// 2. REFINED CLEANING
+    // --- STEP 3: REFINED CLEANING ---
     clean = clean
         .replace(/<[^>]*>?/gm, '')           // Removes HTML tags
         .replace(/:[a-zA-Z0-9_-]+:/g, '')    // Removes :emotename:
         .replace(/\[[^\]]*\]/g, '')          // Removes bracketed text
-        .replace(/[^\w\s?.!,$€]/g, '')       // Keep letters, numbers, punctuation, and currency
-        .replace(/\$/g, ' dollars ')          // <--- ADD THIS LINE: Manually swap $ for the word
+        .replace(/[^\w\s?.!,]/g, '')         // Clean out all remaining weird symbols
         .replace(/\s+/g, ' ')                // Collapses spaces
         .trim();
 
-    // 3. WORD BLACKLIST CHECK
+    // --- STEP 4: WORD BLACKLIST CHECK ---
     if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
 
-    // 4. THE "NUMBERS" FIX
-    // Ensure we don't return early if the message contains digits (0-9)
-    // This regex checks: "Does it have at least one letter OR one number?"
+    // --- STEP 5: VALIDATION ---
     if (/[a-zA-Z0-9]/.test(clean) === false) {
         console.log("Message blocked: No alphanumeric characters found.");
         return;
