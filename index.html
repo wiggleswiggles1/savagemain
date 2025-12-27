@@ -99,16 +99,34 @@
     connectTwitch();
 
     function handleCommands(user, msg, isMod) {
-        const cmd = msg.toLowerCase().trim();
-        if (!isMod) return;
-        if (cmd === "!ttsoff") { ttsEnabled = false; window.speechSynthesis.cancel(); updateStatusUI(); speakSystem("TTS Off"); }
-        else if (cmd === "!ttson") { ttsEnabled = true; updateStatusUI(); speakSystem("TTS On"); }
-        else if (cmd === "!subson") { subOnlyMode = true; updateStatusUI(); speakSystem("Subs Only"); }
-        else if (cmd === "!subsoff") { subOnlyMode = false; updateStatusUI(); speakSystem("All Mode"); }
-        else if (cmd === "!namesoff") { readNames = false; updateStatusUI(); speakSystem("Names Off"); }
-        else if (cmd === "!nameson") { readNames = true; updateStatusUI(); speakSystem("Names On"); }
-        else if (cmd === "!ttsreset") { window.speechSynthesis.cancel(); speakSystem("TTS Reset"); }    
+    const parts = msg.toLowerCase().trim().split(" ");
+    const cmd = parts[0];
+    const arg = parts[1];
+
+    // --- User Commands (Anyone can use) ---
+    if (cmd === "!voice") {
+        if (!arg) {
+            // Optional: You could speak the total voice count to help them
+            return;
+        }
+        const voiceIndex = parseInt(arg);
+        if (!isNaN(voiceIndex) && voiceIndex >= 0 && voiceIndex < voices.length) {
+            userVoices[user.toLowerCase()] = voiceIndex;
+            speakSystem(`${user} voice set to ${voiceIndex}`);
+        }
+        return; // Exit so it doesn't try to process as TTS
     }
+
+    // --- Moderator Commands ---
+    if (!isMod) return;
+    if (cmd === "!ttsoff") { ttsEnabled = false; window.speechSynthesis.cancel(); updateStatusUI(); speakSystem("TTS Off"); }
+    else if (cmd === "!ttson") { ttsEnabled = true; updateStatusUI(); speakSystem("TTS On"); }
+    else if (cmd === "!subson") { subOnlyMode = true; updateStatusUI(); speakSystem("Subs Only"); }
+    else if (cmd === "!subsoff") { subOnlyMode = false; updateStatusUI(); speakSystem("All Mode"); }
+    else if (cmd === "!namesoff") { readNames = false; updateStatusUI(); speakSystem("Names Off"); }
+    else if (cmd === "!nameson") { readNames = true; updateStatusUI(); speakSystem("Names On"); }
+    else if (cmd === "!ttsreset") { window.speechSynthesis.cancel(); speakSystem("TTS Reset"); }    
+} 
 
 function processAndSpeak(user, raw, isMod, isSub, isKick) {
     if (!ttsEnabled) return; 
@@ -145,28 +163,27 @@ function processAndSpeak(user, raw, isMod, isSub, isKick) {
 }
 
 function speak(user, text) {
-    // Some engines need a resume call before every speak event
     window.speechSynthesis.resume();
     
-    // Optional: If you want numbers read clearly (1 2 3) instead of (One Hundred Twenty Three)
-    // Uncomment the next line:
-    // text = text.replace(/(\d)/g, '$1 ');
-
     const finalPhrase = readNames ? `${user} says: ${text}` : text;
     const speech = new SpeechSynthesisUtterance(finalPhrase);
 
     if (voices.length > 0) {
-        let hash = 0;
-        for (let i = 0; i < user.length; i++) hash = user.charCodeAt(i) + ((hash << 5) - hash);
-        speech.voice = voices[Math.abs(hash) % voices.length];
+        const userNameLower = user.toLowerCase();
+        
+        // Check if user has a custom voice saved
+        if (userVoices[userNameLower] !== undefined) {
+            speech.voice = voices[userVoices[userNameLower]];
+        } else {
+            // Fallback to the hash-based random voice
+            let hash = 0;
+            for (let i = 0; i < user.length; i++) hash = user.charCodeAt(i) + ((hash << 5) - hash);
+            speech.voice = voices[Math.abs(hash) % voices.length];
+        }
     }
 
     speech.rate = 1.1;
     speech.volume = 1.0;
-    
-    // Troubleshooting log - Open your browser console (F12) to see if this triggers
-    console.log(`Attempting to speak: ${finalPhrase}`);
-
     window.speechSynthesis.speak(speech);
 }
 
