@@ -26,22 +26,49 @@
     let subOnlyMode = false;
     let readNames = false;
 
+    // --- VOICE LOADING FIX ---
     function loadVoices() { 
-        voices = window.speechSynthesis.getVoices().filter(v => v.lang.includes('en')); 
-        if (voices.length === 0) voices = window.speechSynthesis.getVoices();
+        // Attempt to get English voices
+        let availableVoices = window.speechSynthesis.getVoices();
+        let enVoices = availableVoices.filter(v => v.lang.includes('en')); 
+        
+        // If we found English voices, use them. Otherwise, take whatever is available.
+        voices = enVoices.length > 0 ? enVoices : availableVoices;
+        
+        if (voices.length > 0) {
+            console.log(`TTS Ready: ${voices.length} voices loaded.`);
+            updateStatusUI();
+        }
     }
+
+    // Chrome/OBS Fix: The list is populated asynchronously
     window.speechSynthesis.onvoiceschanged = loadVoices;
     loadVoices();
+
+    // Safety Interval: Re-check every 2 seconds if the list is empty
+    const voiceRetry = setInterval(() => {
+        if (voices.length === 0) {
+            loadVoices();
+        } else {
+            clearInterval(voiceRetry);
+        }
+    }, 2000);
 
     function updateStatusUI() {
         const el = document.getElementById('status-msg');
         const mode = subOnlyMode ? "SUBS ONLY" : "ALL";
         const nameStatus = readNames ? "ON" : "OFF";
-        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${mode} | Names: ${nameStatus}`;
+        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${mode} | Names: ${nameStatus} | Voices: ${voices.length}`;
         el.style.color = ttsEnabled ? '#53fc18' : '#ff4b4b';
     }
 
-    // --- KICK ---
+    function speakSystem(text) {
+        const msg = new SpeechSynthesisUtterance(text);
+        msg.volume = 0.5;
+        window.speechSynthesis.speak(msg);
+    }
+
+    // --- KICK & TWITCH INTEGRATION ---
     const pusher = new Pusher('32cbd69e4b950bf97679', { cluster: 'us2', forceTLS: true });
     const kickChannel = pusher.subscribe(`chatrooms.${KICK_CHATROOM_ID}.v2`);
     kickChannel.bind('App\\Events\\ChatMessageEvent', (data) => {
@@ -49,10 +76,9 @@
         const isMod = chat.sender.identity.badges.some(b => b.type === 'moderator' || b.type === 'broadcaster');
         const isSub = chat.sender.identity.badges.some(b => b.type === 'subscriber' || b.type === 'founder' || b.type === 'og');
         handleCommands(chat.sender.username, chat.content, isMod);
-        processAndSpeak(chat.sender.username, chat.content, isMod, isSub, true); // Added 'true' to signal Kick
+        processAndSpeak(chat.sender.username, chat.content, isMod, isSub, true);
     });
 
-    // --- TWITCH ---
     function connectTwitch() {
         const socket = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
         socket.onopen = () => {
@@ -72,25 +98,6 @@
             let message = parts[1].trim();
             const isMod = raw.includes('mod=1') || raw.includes('badges=broadcaster');
             const isSub = raw.includes('subscriber=1') || raw.includes('founder/1');
-
-            if (raw.includes('emotes=')) {
-                const emotesPart = raw.match(/emotes=([^; ]+)/);
-                if (emotesPart && emotesPart[1]) {
-                    const positions = [];
-                    emotesPart[1].split('/').forEach(e => {
-                        const ranges = e.split(':')[1];
-                        if (ranges) {
-                            ranges.split(',').forEach(r => {
-                                const [s, end] = r.split('-').map(Number);
-                                positions.push({s, end});
-                            });
-                        }
-                    });
-                    positions.sort((a, b) => b.s - a.s).forEach(p => {
-                        message = message.slice(0, p.s) + message.slice(p.end + 1);
-                    });
-                }
-            }
             handleCommands(user, message, isMod);
             processAndSpeak(user, message, isMod, isSub, false);
         };
@@ -110,66 +117,47 @@
         else if (cmd === "!ttsreset") { window.speechSynthesis.cancel(); speakSystem("TTS Reset"); }    
     }
 
-function processAndSpeak(user, raw, isMod, isSub, isKick) {
-    if (!ttsEnabled) return; 
-    if (subOnlyMode && !isMod && !isSub) return;
-    if (USER_BLACKLIST.includes(user.toLowerCase())) return;
-    if (PREFIX_BLOCK.some(p => raw.trim().startsWith(p))) return;
-    if (raw === lastProcessedMessage) return; 
-    lastProcessedMessage = raw;
+    function processAndSpeak(user, raw, isMod, isSub, isKick) {
+        if (!ttsEnabled) return; 
+        if (subOnlyMode && !isMod && !isSub) return;
+        if (USER_BLACKLIST.includes(user.toLowerCase())) return;
+        if (PREFIX_BLOCK.some(p => raw.trim().startsWith(p))) return;
+        if (raw === lastProcessedMessage) return; 
+        lastProcessedMessage = raw;
 
-    let clean = raw;
+        let clean = raw;
+        if (isKick) { clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); }
+        clean = clean.replace(/<[^>]*>?/gm, '').replace(/:[a-zA-Z0-9_-]+:/g, '').replace(/\[[^\]]*\]/g, '').replace(/[^\w\s?.!,\$]/g, '').replace(/\s+/g, ' ').trim();
+        if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
+        if (/[a-zA-Z0-9]/.test(clean) === false) return;
 
-    // 1. KICK EMOTE CLEANER
-    if (isKick) {
-        clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); 
+        speak(user, clean);
     }
 
-    // 2. REFINED CLEANING
-    clean = clean
-        .replace(/<[^>]*>?/gm, '')           // Removes HTML tags
-        .replace(/:[a-zA-Z0-9_-]+:/g, '')    // Removes :emotename:
-        .replace(/\[[^\]]*\]/g, '')          // Removes bracketed text
-        // UPDATED WHITELIST: We added \$ here so the dollar sign is NOT deleted
-        .replace(/[^\w\s?.!,\$]/g, '')       
-        .replace(/\s+/g, ' ')                // Collapses spaces
-        .trim();
+    function speak(user, text) {
+        window.speechSynthesis.resume();
+        
+        const finalPhrase = readNames ? `${user} says: ${text}` : text;
+        const speech = new SpeechSynthesisUtterance(finalPhrase);
 
-    // 3. WORD BLACKLIST CHECK
-    if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
+        if (voices.length > 0) {
+            // Stronger Hashing Algorithm to ensure better voice distribution
+            let hash = 0;
+            for (let i = 0; i < user.length; i++) {
+                hash = ((hash << 5) - hash) + user.charCodeAt(i);
+                hash |= 0; 
+            }
+            // Use Math.abs to ensure positive index
+            const voiceIndex = Math.abs(hash) % voices.length;
+            speech.voice = voices[voiceIndex];
+        }
 
-    // 4. VALIDATION
-    if (/[a-zA-Z0-9]/.test(clean) === false) return;
-
-    speak(user, clean);
-}
-
-function speak(user, text) {
-    // Some engines need a resume call before every speak event
-    window.speechSynthesis.resume();
-    
-    // Optional: If you want numbers read clearly (1 2 3) instead of (One Hundred Twenty Three)
-    // Uncomment the next line:
-    // text = text.replace(/(\d)/g, '$1 ');
-
-    const finalPhrase = readNames ? `${user} says: ${text}` : text;
-    const speech = new SpeechSynthesisUtterance(finalPhrase);
-
-    if (voices.length > 0) {
-        let hash = 0;
-        for (let i = 0; i < user.length; i++) hash = user.charCodeAt(i) + ((hash << 5) - hash);
-        speech.voice = voices[Math.abs(hash) % voices.length];
+        speech.rate = 1.1;
+        speech.volume = 1.0;
+        window.speechSynthesis.speak(speech);
     }
 
-    speech.rate = 1.1;
-    speech.volume = 1.0;
-    
-    // Troubleshooting log - Open your browser console (F12) to see if this triggers
-    console.log(`Attempting to speak: ${finalPhrase}`);
-
-    window.speechSynthesis.speak(speech);
-}
-
+    // Keep-alive for Speech engine
     setInterval(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 2000);
 </script>
 </body>
