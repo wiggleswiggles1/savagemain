@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Fixed TikTok TTS | TechBuilds</title>
+    <title>Unique Voice TTS | TechBuilds</title>
     <script src="https://js.pusher.com/8.3.0/pusher.min.js"></script>
     <style>
         body { background: transparent; overflow: hidden; margin: 0; padding: 0; }
@@ -10,103 +10,94 @@
     </style>
 </head>
 <body>
-<div id="status-msg">TTS Initializing...</div>
-
 <script>
     // --- CONFIGURATION ---
     const KICK_CHATROOM_ID = "1085080"; 
     const TWITCH_CHANNEL = "xstr8xsavagex";
     const TWITCH_OAUTH = "oauth:k00bellyf4iqcc6obzjomv9c7v6w1q";
 
-    // Your original filters
     const USER_BLACKLIST = ["streamelements", "nightbot", "botrix", "kicktools", "kickbot", "growopgame", "missxss", "botrixoficial", "BotRixOficial"]; 
     const WORD_BLACKLIST = ["http", ".com", ".net", ".org"]; 
     const PREFIX_BLOCK = ["!", "/"]; 
 
-    // Diverse TikTok Voice List
-    const TIKTOK_VOICES = [
-        "en_us_001", // Jessie
-        "en_us_006", // Joey
-        "en_us_007", // Professor
-        "en_us_009", // Scientist
-        "en_us_010", // Confidence
-        "en_us_rocket", // Rocket
-        "en_us_stormtrooper", // Stormtrooper
-        "en_us_ghostface", // Ghostface
-        "en_male_funny", // Wacky
-        "en_male_narration" // Storyteller
-    ];
-
+    let voices = [];
     let ttsEnabled = true;
     let subOnlyMode = false;
     let readNames = false;
     let lastProcessedMessage = "";
 
+    // --- UNIQUE VOICE ENGINE ---
+    function loadVoices() {
+        // Fetch all system voices (Microsoft, Google, etc.)
+        let allVoices = window.speechSynthesis.getVoices();
+        // Filter for English primarily
+        let enVoices = allVoices.filter(v => v.lang.includes('en'));
+        voices = enVoices.length > 0 ? enVoices : allVoices;
+
+        if (voices.length > 0) {
+            updateStatusUI();
+        }
+    }
+
+    // Chrome/OBS requires this event listener to populate the list
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    loadVoices();
+
     function updateStatusUI() {
         const el = document.getElementById('status-msg');
         const mode = subOnlyMode ? "SUBS ONLY" : "ALL";
-        el.innerText = `TikTok TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${mode} | Names: ${readNames ? 'ON' : 'OFF'}`;
+        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${mode} | Voices Loaded: ${voices.length}`;
         el.style.color = ttsEnabled ? '#53fc18' : '#ff4b4b';
     }
 
-    // --- ENHANCED SPEAKING LOGIC ---
-    async function speak(user, text) {
+    function speak(user, text) {
         if (!ttsEnabled) return;
-
-        // 1. Generate unique hash for user
-        let hash = 0;
-        for (let i = 0; i < user.length; i++) {
-            hash = ((hash << 5) - hash) + user.charCodeAt(i);
-            hash |= 0;
-        }
-
-        // 2. Pick a unique voice
-        const voiceIndex = Math.abs(hash) % TIKTOK_VOICES.length;
-        const selectedVoice = TIKTOK_VOICES[voiceIndex];
+        
+        // Safety: If voices list is still empty, try one last reload
+        if (voices.length === 0) loadVoices();
 
         const phrase = readNames ? `${user} says ${text}` : text;
-        const cleanPhrase = phrase.substring(0, 200);
+        const utterance = new SpeechSynthesisUtterance(phrase);
 
-        // 3. New API Request with Cache Buster (t=...) to force voice changes
-        const url = `https://tiktok-tts.weilbyte.dev/api/generate?engine=tiktok&voice=${selectedVoice}&text=${encodeURIComponent(cleanPhrase)}&t=${Date.now()}`;
-
-        try {
-            const audio = new Audio(url);
+        // --- THE "DIFFERENT USER" LOGIC ---
+        if (voices.length > 0) {
+            let hash = 0;
+            for (let i = 0; i < user.length; i++) {
+                hash = ((hash << 5) - hash) + user.charCodeAt(i);
+                hash |= 0; 
+            }
             
-            // 4. Pitch/Speed Shift Backup
-            // Even if the voice sounds similar, we slightly change the speed per user
-            const speedShift = 1.0 + ((Math.abs(hash) % 10) / 100); 
-            audio.playbackRate = speedShift; 
+            // 1. Assign a unique VOICE from your system based on username
+            const voiceIndex = Math.abs(hash) % voices.length;
+            utterance.voice = voices[voiceIndex];
 
-            await audio.play();
-            console.log(`Speaking: ${user} | Voice: ${selectedVoice} | Speed: ${speedShift}`);
-        } catch (err) {
-            console.error("TikTok API Error, trying Google Fallback:", err);
-            const gUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=${encodeURIComponent(cleanPhrase)}`;
-            new Audio(gUrl).play();
+            // 2. Assign a unique PITCH (0.5 to 1.5) based on username
+            utterance.pitch = 0.8 + (Math.abs(hash % 7) / 10); 
+
+            // 3. Assign a unique RATE (0.9 to 1.2) based on username
+            utterance.rate = 1.0 + (Math.abs(hash % 3) / 10);
         }
+
+        window.speechSynthesis.cancel(); // Clears any stuck audio
+        window.speechSynthesis.speak(utterance);
     }
 
-    // --- MESSAGE PROCESSING ---
+    // --- FILTERS & PROCESSING ---
     function processAndSpeak(user, raw, isMod, isSub, isKick) {
-        const lowerUser = user.toLowerCase();
-        if (USER_BLACKLIST.includes(lowerUser)) return;
+        if (USER_BLACKLIST.includes(user.toLowerCase())) return;
         if (PREFIX_BLOCK.some(p => raw.trim().startsWith(p))) return;
         if (subOnlyMode && !isMod && !isSub) return;
         if (raw === lastProcessedMessage) return; 
         lastProcessedMessage = raw;
 
         let clean = raw;
-        if (isKick) { 
-            clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); 
-        }
+        if (isKick) { clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); }
         
-        // RegEx: Keep letters, numbers, spaces, ?, !, ., ,, and $
         clean = clean
             .replace(/<[^>]*>?/gm, '')           
             .replace(/:[a-zA-Z0-9_-]+:/g, '')    
             .replace(/\[[^\]]*\]/g, '')          
-            .replace(/[^\w\s?.!,\$]/g, '') 
+            .replace(/[^\w\s?.!,\$]/g, '') // $ sign remains
             .replace(/\s+/g, ' ')                
             .trim();
 
@@ -129,7 +120,7 @@
         updateStatusUI();
     }
 
-    // --- KICK CONNECTION ---
+    // --- CONNECTIONS ---
     const pusher = new Pusher('32cbd69e4b950bf97679', { cluster: 'us2', forceTLS: true });
     const kickChannel = pusher.subscribe(`chatrooms.${KICK_CHATROOM_ID}.v2`);
     kickChannel.bind('App\\Events\\ChatMessageEvent', (data) => {
@@ -140,7 +131,6 @@
         processAndSpeak(chat.sender.username, chat.content, isMod, isSub, true);
     });
 
-    // --- TWITCH CONNECTION ---
     function connectTwitch() {
         const socket = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
         socket.onopen = () => {
