@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>TikTok TTS Overlay | TechBuilds</title>
+    <title>Ultimate TTS Overlay | TechBuilds</title>
     <script src="https://js.pusher.com/8.3.0/pusher.min.js"></script>
     <style>
         body { background: transparent; overflow: hidden; margin: 0; padding: 0; }
@@ -16,16 +16,11 @@
     const TWITCH_CHANNEL = "xstr8xsavagex";
     const TWITCH_OAUTH = "oauth:k00bellyf4iqcc6obzjomv9c7v6w1q";
 
-    // Your Original Filters
     const USER_BLACKLIST = ["streamelements", "nightbot", "botrix", "kicktools", "kickbot", "growopgame", "missxss", "botrixoficial", "BotRixOficial"]; 
     const WORD_BLACKLIST = ["http", ".com", ".net", ".org"]; 
     const PREFIX_BLOCK = ["!", "/"]; 
 
-    // TikTok Voice List (Rotating)
-    const TIKTOK_VOICES = [
-        "en_us_001", "en_us_006", "en_us_007", "en_us_009", "en_us_010",
-        "en_us_rocket", "en_us_stormtrooper", "en_us_ghostface", "en_male_narration"
-    ];
+    const TIKTOK_VOICES = ["en_us_001", "en_us_006", "en_us_007", "en_us_009", "en_us_010", "en_us_rocket", "en_us_stormtrooper", "en_us_ghostface"];
 
     let ttsEnabled = true;
     let subOnlyMode = false;
@@ -34,62 +29,68 @@
 
     function updateStatusUI() {
         const el = document.getElementById('status-msg');
-        const mode = subOnlyMode ? "SUBS ONLY" : "ALL";
-        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${mode} | Names: ${readNames ? 'ON' : 'OFF'}`;
+        el.innerText = `TTS: ${ttsEnabled ? 'ON' : 'OFF'} | Mode: ${subOnlyMode ? 'SUBS' : 'ALL'} | Names: ${readNames ? 'ON' : 'OFF'}`;
         el.style.color = ttsEnabled ? '#53fc18' : '#ff4b4b';
     }
 
-    // --- SPEAKING LOGIC (TIKTOK) ---
+    // --- MULTI-STAGE SPEAKING LOGIC ---
     async function speak(user, text) {
-        // Voice Hashing Logic
-        let hash = 0;
-        for (let i = 0; i < user.length; i++) {
-            hash = ((hash << 5) - hash) + user.charCodeAt(i);
-            hash |= 0;
-        }
-        const voice = TIKTOK_VOICES[Math.abs(hash) % TIKTOK_VOICES.length];
-        const finalPhrase = readNames ? `${user} says ${text}` : text;
+        if (!ttsEnabled) return;
         
-        // TikTok API Call (Limit 200 chars)
-        const url = `https://tiktok-tts.weilbyte.dev/api/generate?engine=tiktok&voice=${voice}&text=${encodeURIComponent(finalPhrase.substring(0, 200))}`;
+        const finalPhrase = readNames ? `${user} says ${text}` : text;
+        const cleanText = finalPhrase.substring(0, 200);
 
+        // Calculate voice based on username
+        let hash = 0;
+        for (let i = 0; i < user.length; i++) { hash = ((hash << 5) - hash) + user.charCodeAt(i); hash |= 0; }
+        const tkVoice = TIKTOK_VOICES[Math.abs(hash) % TIKTOK_VOICES.length];
+
+        // TRY TIKTOK (Stage 1)
+        const tkUrl = `https://tiktok-tts.weilbyte.dev/api/generate?engine=tiktok&voice=${tkVoice}&text=${encodeURIComponent(cleanText)}`;
+        
         try {
-            const audio = new Audio(url);
+            const audio = new Audio(tkUrl);
             await audio.play();
-        } catch (err) {
-            console.error("TTS Error:", err);
+            console.log("Played via TikTok");
+        } catch (e) {
+            console.warn("TikTok Failed, trying Google Fallback...");
+            
+            // TRY GOOGLE (Stage 2)
+            try {
+                const gUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
+                const gAudio = new Audio(gUrl);
+                await gAudio.play();
+            } catch (e2) {
+                console.warn("Google Failed, trying System Voice...");
+                
+                // TRY SYSTEM (Stage 3)
+                window.speechSynthesis.cancel();
+                const systemMsg = new SpeechSynthesisUtterance(cleanText);
+                window.speechSynthesis.speak(systemMsg);
+            }
         }
     }
 
-    // --- FILTER & PROCESS LOGIC ---
+    // --- FILTER & PROCESS ---
     function processAndSpeak(user, raw, isMod, isSub, isKick) {
-        if (!ttsEnabled) return; 
-        if (subOnlyMode && !isMod && !isSub) return;
         if (USER_BLACKLIST.includes(user.toLowerCase())) return;
         if (PREFIX_BLOCK.some(p => raw.trim().startsWith(p))) return;
+        if (subOnlyMode && !isMod && !isSub) return;
         if (raw === lastProcessedMessage) return; 
         lastProcessedMessage = raw;
 
         let clean = raw;
-
-        // 1. Kick Emote Cleaning
-        if (isKick) {
-            clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); 
-        }
-
-        // 2. Regex Cleaning (Keep $, letters, numbers)
+        if (isKick) { clean = clean.replace(/\[emote:\d+:[^\]]+\]/g, ''); }
+        
         clean = clean
             .replace(/<[^>]*>?/gm, '')           
             .replace(/:[a-zA-Z0-9_-]+:/g, '')    
             .replace(/\[[^\]]*\]/g, '')          
-            .replace(/[^\w\s?.!,\$]/g, '')       
+            .replace(/[^\w\s?.!,\$]/g, '') // Kept your $ sign fix
             .replace(/\s+/g, ' ')                
             .trim();
 
-        // 3. Word Blacklist
         if (WORD_BLACKLIST.some(word => clean.toLowerCase().includes(word.toLowerCase()))) return;
-
-        // 4. Content Check
         if (/[a-zA-Z0-9]/.test(clean) === false) return;
 
         speak(user, clean);
@@ -97,18 +98,18 @@
 
     // --- COMMANDS ---
     function handleCommands(user, msg, isMod) {
-        const cmd = msg.toLowerCase().trim();
         if (!isMod) return;
-        if (cmd === "!ttsoff") { ttsEnabled = false; updateStatusUI(); }
-        else if (cmd === "!ttson") { ttsEnabled = true; updateStatusUI(); }
-        else if (cmd === "!subson") { subOnlyMode = true; updateStatusUI(); }
-        else if (cmd === "!subsoff") { subOnlyMode = false; updateStatusUI(); }
-        else if (cmd === "!namesoff") { readNames = false; updateStatusUI(); }
-        else if (cmd === "!nameson") { readNames = true; updateStatusUI(); }
+        const cmd = msg.toLowerCase().trim();
+        if (cmd === "!ttsoff") ttsEnabled = false;
+        else if (cmd === "!ttson") ttsEnabled = true;
+        else if (cmd === "!subson") subOnlyMode = true;
+        else if (cmd === "!subsoff") subOnlyMode = false;
+        else if (cmd === "!namesoff") readNames = false;
+        else if (cmd === "!nameson") readNames = true;
         updateStatusUI();
     }
 
-    // --- KICK ---
+    // --- CONNECTIONS ---
     const pusher = new Pusher('32cbd69e4b950bf97679', { cluster: 'us2', forceTLS: true });
     const kickChannel = pusher.subscribe(`chatrooms.${KICK_CHATROOM_ID}.v2`);
     kickChannel.bind('App\\Events\\ChatMessageEvent', (data) => {
@@ -119,7 +120,6 @@
         processAndSpeak(chat.sender.username, chat.content, isMod, isSub, true);
     });
 
-    // --- TWITCH ---
     function connectTwitch() {
         const socket = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
         socket.onopen = () => {
@@ -132,12 +132,11 @@
             if (raw.startsWith('PING')) { socket.send('PONG :tmi.twitch.tv'); return; }
             if (raw.includes('PRIVMSG')) {
                 const user = raw.match(/:([^!]+)!/)[1];
-                const parts = raw.split(' PRIVMSG #' + TWITCH_CHANNEL + ' :');
-                const message = parts[1].trim();
+                const msg = raw.split('PRIVMSG #' + TWITCH_CHANNEL + ' :')[1].trim();
                 const isMod = raw.includes('mod=1') || raw.includes('broadcaster/1');
                 const isSub = raw.includes('subscriber=1');
-                handleCommands(user, message, isMod);
-                processAndSpeak(user, message, isMod, isSub, false);
+                handleCommands(user, msg, isMod);
+                processAndSpeak(user, msg, isMod, isSub, false);
             }
         };
         socket.onclose = () => setTimeout(connectTwitch, 5000);
